@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Run tests (pytest)
+        run: pytest -v
+
+      - name: Provider regression gate (jury-scored cross-provider equivalence)
+        run: python scripts/provider_regression_gate.py --threshold 0.4
+
+      - name: Smoke-test demo scripts
+        run: |
+          python scripts/demo_multi_provider.py
+          python scripts/demo_contract_enforcement.py
+          python scripts/demo_failover.py
