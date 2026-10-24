@@ -14,9 +14,12 @@ you run more than one model provider in production:
    (cosine similarity, not exact string match) short-circuits repeat/near-
    duplicate calls before they ever reach a provider.
 
-A fourth component, a small **LLM-jury evaluator**, cross-checks that
-different providers answering the same prompt stay semantically/contractually
-equivalent, and wires into an automated CI regression gate.
+A fourth component, a **confidence-gated evaluator cascade** -- TypeSafe
+[Jev](https://typesafe.ai/) (a real, typed "System One" model) for a fast
+typed first pass, falling back to a small **LLM-jury** only when ambiguous
+-- cross-checks that different providers answering the same prompt stay
+semantically/contractually equivalent, and wires into an automated CI
+regression gate.
 
 The entire system -- gateway, three provider "personas", cache, breaker,
 router, jury -- **runs fully offline with zero API keys**, via a deterministic
@@ -39,7 +42,7 @@ included and activate automatically when credentials/Ollama are present.
 - [Sequence diagrams](#sequence-diagrams)
 - [Quickstart](#quickstart)
 - [Demo Script](#demo-script)
-- [Evaluator (LLM Jury)](#evaluator-llm-jury)
+- [Evaluator](#evaluator)
 - [Deployment](#deployment)
 - [Testing](#testing)
 - [Configuration reference](#configuration-reference)
@@ -73,9 +76,10 @@ flowchart TB
 
     Contract --> Router
 
-    Jury["Jury Evaluator (evaluator/)"] -. cross-provider scoring .-> AdapterA
-    Jury -. cross-provider scoring .-> AdapterB
-    Gate["scripts/provider_regression_gate.py (CI)"] --> Jury
+    Jev["TypeSafe Jev (evaluator/jev_gate.py)\nfast typed questions"] -. cross-provider scoring .-> AdapterA
+    Jev -. cross-provider scoring .-> AdapterB
+    Jev -- "ambiguous confidence" --> Jury["Jury Evaluator (evaluator/jury.py)\nfallback, textual rationale"]
+    Gate["scripts/provider_regression_gate.py (CI)"] --> Jev
 
     Cache -.-> Redis[("Redis / fakeredis")]
 ```
@@ -295,52 +299,129 @@ All three are also covered by automated tests: `tests/test_providers.py`,
 
 ---
 
-## Evaluator (LLM Jury)
+## Evaluator
 
-`evaluator/` implements a small **panel of independent, deterministic
-judges** (`evaluator/judges.py`) that each score a pair of cross-provider
-responses to the *same prompt* on a narrow signal:
+TypeSafe Jev + LLM Jury, confidence-gated.
 
-* `ContractConformanceJudge` -- flags empty content, `error` finish reasons,
-  inconsistent usage totals, missing provider field.
-* `LengthRatioJudge` -- flags wildly mismatched response lengths.
-* `KeywordOverlapJudge` -- Jaccard token overlap (lexical equivalence proxy).
-* `SemanticOverlapJudge` -- cosine similarity of hash-embeddings (semantic
-  equivalence proxy, reusing the same embedder as the semantic cache).
+Cross-provider response equivalence is checked by a **two-tier cascade**:
 
-`evaluator/jury.py` aggregates votes (mean score + majority-pass rule) into a
-structured `JuryVerdict` (score 0-1, pass/fail, per-judge votes, rationale,
-aggregate method).
+1. **TypeSafe Jev (fast, typed, calibrated)** -- [Jev](https://typesafe.ai/)
+   by [TypeSafe AI](https://typesafe.ai/) is a real, commercially-available
+   "[System One model](https://docs.typesafe.ai/introduction)": instead of
+   generating text your code has to parse, you send a `state` plus typed
+   **questions** (`Noul` yes/no, `Choice`, `Score`) and get back typed
+   answers with calibrated probabilities -- no text generation, no JSON
+   recovery. `evaluator/jev_gate.py` asks three Jev questions per
+   cross-provider comparison: *is the response schema-conformant?* (Noul),
+   *is it free of hallucinated fields?* (Noul), and *how semantically
+   equivalent is it to the baseline?* (Score).
+2. **This repo's existing LLM-jury (slower, textual rationale)** --
+   `evaluator/jury.py`, as before: a panel of independent, deterministic
+   judges (`ContractConformanceJudge`, `LengthRatioJudge`,
+   `KeywordOverlapJudge`, `SemanticOverlapJudge`) producing a structured
+   `JuryVerdict` with a human-readable rationale.
 
-**Why a panel of small/cheap judges instead of one large LLM-as-judge call?**
-Each individual judge here is intentionally narrow and deterministic (no
-model call at all, in this repo's default configuration) so the panel is
-fast and free to run on every CI build. The general pattern this follows --
-several independent, cheap, narrow judges outvoting any single judge's blind
-spot -- is a reasonable, honest middle ground between "no automated check at
-all" and "one expensive LLM call per comparison", and each `BaseJudge` is a
-small, swappable interface: a production deployment can replace any of these
-with a real (small) model-backed judge without changing the aggregation
-logic. **We deliberately do not cite specific benchmark numbers or product
-comparisons for this claim** -- it's a design rationale, not a benchmarked
-result.
+### Confidence-gated routing
 
-Wired into CI via `scripts/provider_regression_gate.py`: it sends a fixed
-evaluation set of prompts to two provider pairs (`mock-claude`/`mock-gpt` and
-`mock-gpt`/`local-qwen`), scores each with the jury, and exits non-zero if the
-mean aggregate score drops below `--threshold` (default `0.4`). This is the
-kind of regression check that would catch, e.g., an adapter change that
-silently truncates or corrupts responses while still producing
-contract-valid JSON.
+TypeSafe's own documented pattern
+([docs.typesafe.ai/patterns/confidence-routing](https://docs.typesafe.ai/patterns/confidence-routing))
+treats confidence as a *second axis*, orthogonal to the answer itself:
+
+> **High confidence:** act automatically. **Medium confidence:** proceed
+> with caution / confirm. **Low confidence:** do not act -- route to a
+> human or fall back to a different system. Thresholds should scale with
+> the stakes of the action, not be one global number.
+
+`evaluator/jev_gate.py`'s `ConfidenceGatedCascade` implements exactly this:
+Jev answers fast; if its *confidence* clears a stakes-appropriate bar, its
+typed answer is trusted directly (no jury call, no textual-rationale cost).
+Below that bar, the cascade falls back to the jury -- our "different system"
+for the ambiguous cases.
+
+```mermaid
+flowchart LR
+    Req["prompt + response_a + response_b"] --> Jev["TypeSafe Jev\n(Noul x2 + Score, 1 request)"]
+    Jev --> Gate{"aggregate confidence\n>= stakes threshold?"}
+    Gate -- "yes: HIGH" --> Fast["Act on Jev's typed answer directly\n(fast path -- production monitoring)"]
+    Gate -- "no: MEDIUM / LOW" --> Jury["evaluator/jury.py LLM-jury\n(textual rationale, slower)"]
+    Jury --> Verdict["CascadeVerdict\n(passed, rationale, jury_verdict)"]
+    Fast --> Verdict
+```
+
+Confidence formulas are reproduced **exactly** from
+[docs.typesafe.ai/confidence](https://docs.typesafe.ai/confidence) (Noul:
+`|2p-1|`; Choice: `(n*p_max-1)/(n-1)`; Score: a probability-weighted average
+distance from the most likely level, normalized against a uniform
+distribution) -- see `tests/test_jev_gate.py`, which pins these formulas
+against the doc site's own worked examples (e.g. `probabilities=(0, 0.57,
+0.43)` -> `score=1.43`, `confidence≈0.35`).
+
+The per-question aggregate "health value" is a weighted mean of normalized
+per-question values, in the spirit of DeepEval's `JevEval` metric
+([deepeval.com/blog/introducing-jev-as-a-judge](https://deepeval.com/blog/introducing-jev-as-a-judge)):
+`JevEval = sum(w_i * v_i) / sum(w_i)`. We cite that formula as the
+inspiration for combining several typed questions into one score; routing
+itself is governed separately, by confidence.
+
+### When to use which
+
+| Use case | Path | Why |
+|---|---|---|
+| Production monitoring (high-volume live traffic) | **Jev only**, low/medium threshold (`PRODUCTION_MONITORING_THRESHOLDS`) | Generative judges are too slow/expensive to run on every live request; typed Jev questions are cheap enough to run on all of them. |
+| CI/CD regression gate (`scripts/provider_regression_gate.py`) | **Jev first, Jury fallback** on anything not high-confidence (`CI_REGRESSION_THRESHOLDS`, stricter than production) | A merge-blocking decision is higher-stakes than one live request -- the gate should not trust a cheap heuristic alone for a genuinely ambiguous case. |
+| Prompt/schema debugging needing a rationale | **Jury** (`evaluator/jury.py` directly, or any cascade verdict's `jury_verdict.rationale`) | You want a human-readable explanation of *why* two responses diverged, not just a number. |
+
+### Two real implementations, one offline-safe default
+
+* `TypeSafeJevClient` -- the **real** adapter. Calls
+  `POST https://api.typesafe.ai/v1/systemone` directly via `httpx`. Activates
+  only when `TYPESAFE_API_KEY` is set (same pattern as this repo's other
+  optional real provider adapters). Functionally equivalent to the official
+  `typesafe-sdk` package's `TypeSafeClient(model="jev-latest").system_one(...)`
+  call -- see `requirements-jev.txt` to install the official SDK instead, if
+  you prefer it.
+* `LocalJevStandIn` -- the **offline, deterministic stand-in** used by
+  default (and by every test/demo in this repo). It implements the identical
+  typed contract and the exact same confidence formulas, deriving its three
+  answers from this repo's existing deterministic judges rather than a
+  trained model. It is deliberately scoped to exactly the three questions
+  this repo's cascade asks -- it is *not* a general-purpose Jev substitute,
+  and raises a clear error for anything else.
+
+Why a panel of small/cheap judges (the jury fallback) instead of always
+making one large LLM-as-judge call? Several independent, narrow signals
+outvoting any single judge's blind spot is a reasonable, honest middle
+ground between "no automated check at all" and "one expensive generative
+call per comparison" -- **we deliberately do not cite specific benchmark
+numbers or product comparisons for this claim**, it's a design rationale,
+not a benchmarked result. (TypeSafe's own published speed/cost multiplier
+claims, 40-200x/40-400x, are self-reported on TypeSafe's own workflows --
+mentioned here only with that explicit caveat, not as independently
+verified by this repo.)
+
+Run the CI regression gate (now cascade-first):
 
 ```bash
 python scripts/provider_regression_gate.py --threshold 0.4
 ```
 
-Try the cross-provider evaluation live:
+It runs two sections: a per-provider **self-consistency** smoke check
+(same provider vs. itself -- expected to resolve via Jev's fast path) and
+the harder **cross-provider equivalence** check (different providers --
+expected, correctly, to mostly escalate to the jury under the stricter CI
+threshold). Previously this script always invoked the jury for every case;
+now the jury is reserved for genuinely ambiguous/borderline cases.
+
+Try both evaluation endpoints live:
 
 ```bash
+# Jury only (original, always-generate-a-rationale path)
 curl -s -X POST http://localhost:8000/v1/evaluate \
+  -H "Content-Type: application/json" \
+  -d '{"message":"What is the capital of France?","model_a":"mock-claude","model_b":"mock-gpt"}' | jq '.verdict'
+
+# Confidence-gated cascade (Jev fast path + jury fallback)
+curl -s -X POST http://localhost:8000/v1/evaluate/fast \
   -H "Content-Type: application/json" \
   -d '{"message":"What is the capital of France?","model_a":"mock-claude","model_b":"mock-gpt"}' | jq '.verdict'
 ```
@@ -372,7 +453,7 @@ real use. See the honesty callouts in each doc for specifics.
 
 ```powershell
 pip install -r requirements-dev.txt
-pytest -v          # 48 tests, fully offline (MockProvider + fakeredis)
+pytest -v          # 67 tests, fully offline (MockProvider + fakeredis + LocalJevStandIn)
 ruff check .       # lint
 ```
 
@@ -386,7 +467,8 @@ Test coverage by concern:
 | `tests/test_failover_router.py` | Breaker-triggered failover, rate-limit handling, all-providers-unavailable, session continuity. |
 | `tests/test_semantic_cache.py` | Hit/miss, scoping, invalidation, TTL. |
 | `tests/test_jury.py` | Jury aggregation, contract-violation detection. |
-| `tests/test_api.py` | End-to-end FastAPI tests for all three demo scenarios. |
+| `tests/test_jev_gate.py` | Jev confidence/score formulas pinned to docs.typesafe.ai worked examples, `LocalJevStandIn` determinism/scoping, `ConfidenceGatedCascade` routing (high -> Jev-only, ambiguous -> jury fallback). |
+| `tests/test_api.py` | End-to-end FastAPI tests for all three demo scenarios plus both evaluation endpoints. |
 
 No network access, API keys, or running Redis/Ollama/Docker are required to
 run the full suite.
@@ -410,6 +492,7 @@ All configuration is environment-variable driven (see
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` | unset | Enables the real `OpenAIProvider`. |
 | `VERTEX_PROJECT_ID` / `VERTEX_LOCATION` / `VERTEX_ACCESS_TOKEN` | unset | Enables the real `VertexAIProvider`. |
 | `OLLAMA_HOST` | `http://localhost:11434` | Enables the real `OllamaProvider` if reachable. |
+| `TYPESAFE_API_KEY` | unset | Enables the real `TypeSafeJevClient` (hosted Jev model) for `ConfidenceGatedCascade`; falls back to the offline `LocalJevStandIn` otherwise. |
 
 ---
 
@@ -440,6 +523,17 @@ This is a demo-quality reference implementation. Specifically:
 * **Jury judges are deterministic, not model-backed**, by default. The
   `BaseJudge` interface supports plugging in a real small-model judge; none
   is included, to keep CI fully offline and free.
+* **`TYPESAFE_API_KEY` was not available in this build environment.** The
+  real `TypeSafeJevClient` (`evaluator/jev_gate.py`) was implemented
+  directly against TypeSafe's documented API/confidence-formula spec
+  (https://docs.typesafe.ai/introduction, /confidence,
+  /patterns/confidence-routing) and its confidence/score formulas are unit
+  tested against the doc site's own worked numeric examples -- but the real
+  hosted endpoint has **not** been exercised live. Only `LocalJevStandIn`
+  (the deterministic, offline stand-in) was run by this repo's tests, CI,
+  and demo scripts. `LocalJevStandIn` is also intentionally narrow: it only
+  knows how to answer the three specific response-equivalence questions
+  `ConfidenceGatedCascade` asks, not general-purpose typed questions.
 * **Deployment templates (Bicep/Terraform) are illustrative and unapplied.**
   They were written carefully (the GCP Terraform was validated with
   `terraform validate` against real provider schemas; the Azure Bicep was
