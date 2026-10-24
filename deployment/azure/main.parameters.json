@@ -1,0 +1,88 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "_comment": "ILLUSTRATIVE EXAMPLE ONLY — not applied against any real subscription. Do not commit real secret values here; use '' and set secrets post-deploy via `az keyvault secret set`, or pass a separate untracked parameters file / --parameters key=value overrides for anything sensitive.",
+  "parameters": {
+    "namePrefix": {
+      "value": "llmgw"
+    },
+    "location": {
+      "value": "eastus"
+    },
+    "containerImage": {
+      "value": "myregistry.azurecr.io/enterprise-llm-gateway-router:latest"
+    },
+    "containerRegistryServer": {
+      "value": "myregistry.azurecr.io"
+    },
+    "containerRegistryName": {
+      "value": "myregistry"
+    },
+    "containerTargetPort": {
+      "value": 8000
+    },
+    "healthProbePath": {
+      "value": "/health"
+    },
+    "minReplicas": {
+      "value": 1
+    },
+    "maxReplicas": {
+      "value": 3
+    },
+    "containerCpu": {
+      "value": "0.5"
+    },
+    "containerMemory": {
+      "value": "1Gi"
+    },
+    "redisSkuName": {
+      "value": "Basic"
+    },
+    "redisSkuFamily": {
+      "value": "C"
+    },
+    "redisCapacity": {
+      "value": 0
+    },
+    "apimSkuName": {
+      "value": "Consumption"
+    },
+    "apimSkuCapacity": {
+      "value": 0
+    },
+    "apimPublisherEmail": {
+      "value": "platform-team@example.com"
+    },
+    "apimPublisherName": {
+      "value": "Example Org"
+    },
+    "openAiApiKey": {
+      "value": ""
+    },
+    "deployAzureOpenAI": {
+      "value": false
+    },
+    "azureOpenAiSkuName": {
+      "value": "S0"
+    },
+    "azureOpenAiDeploymentName": {
+      "value": "gpt-4o-mini"
+    },
+    "azureOpenAiModelName": {
+      "value": "gpt-4o-mini"
+    },
+    "azureOpenAiModelVersion": {
+      "value": "2024-07-18"
+    },
+    "azureOpenAiCapacity": {
+      "value": 10
+    },
+    "tags": {
+      "value": {
+        "project": "enterprise-llm-gateway-router",
+        "environment": "illustrative"
+      }
+    }
+  }
+}

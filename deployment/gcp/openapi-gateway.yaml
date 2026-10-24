@@ -1,0 +1,87 @@
+# =============================================================================
+# OpenAPI 2.0 (Swagger) spec used by Google Cloud API Gateway
+# =============================================================================
+# This is a Terraform `templatefile()` template (see main.tf ->
+# google_api_gateway_api_config). ${backend_address} is substituted at
+# `terraform apply` time with the live Cloud Run service URL, so this file
+# routes to the correct backend without manual edits per environment.
+#
+# Cloud API Gateway currently requires OpenAPI *2.0* (Swagger), not 3.0 --
+# hence `swagger: '2.0'` rather than `openapi: 3.0.0` below.
+#
+# Only a representative subset of app/main.py's routes are declared here
+# (enough to demonstrate routing + the health check). Add the remaining
+# admin/demo routes (/v1/chat/multi, /v1/contract-check, /admin/*, etc.) the
+# same way if you want them reachable through the gateway hostname too --
+# anything not listed here simply isn't exposed through API Gateway (it
+# would still be reachable by calling Cloud Run directly, subject to the
+# `allow_unauthenticated` IAM setting in main.tf).
+# =============================================================================
+
+swagger: '2.0'
+info:
+  title: enterprise-llm-gateway-router
+  description: >-
+    Managed API Gateway front door for the provider-agnostic LLM gateway.
+    Illustrative template -- see docs/GCP_DEPLOYMENT.md.
+  version: 1.0.0
+schemes:
+  - https
+produces:
+  - application/json
+
+# Applies to every path below that doesn't declare its own x-google-backend
+# override: all traffic is proxied to the Cloud Run service over HTTP/2.
+x-google-backend:
+  address: ${backend_address}
+  protocol: h2
+
+paths:
+  /health:
+    get:
+      summary: Liveness/readiness check
+      operationId: health
+      responses:
+        '200':
+          description: OK
+
+  /v1/chat:
+    post:
+      summary: Session-based chat turn (stateful, supports failover mid-session)
+      operationId: chat
+      responses:
+        '200':
+          description: OK
+        '503':
+          description: All providers unavailable
+
+  /v1/chat/completions:
+    post:
+      summary: OpenAI-style stateless chat completion
+      operationId: chatCompletions
+      responses:
+        '200':
+          description: OK
+        '503':
+          description: All providers unavailable
+
+  /v1/providers:
+    get:
+      summary: List registered providers and failover chains
+      operationId: listProviders
+      responses:
+        '200':
+          description: OK
+
+  /v1/session/{session_id}:
+    get:
+      summary: Fetch a session's message history
+      operationId: getSession
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          type: string
+      responses:
+        '200':
+          description: OK

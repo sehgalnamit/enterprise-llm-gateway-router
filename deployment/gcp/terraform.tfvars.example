@@ -1,0 +1,50 @@
+# =============================================================================
+# Example terraform.tfvars for deployment/gcp
+# =============================================================================
+# Copy this file to `terraform.tfvars` (which is gitignored by convention --
+# check your repo's .gitignore / add one) and fill in real values. Do NOT
+# commit real project IDs you consider sensitive or real secret values here;
+# leave openai_api_key / vertex_access_token blank and populate them via
+# `gcloud secrets versions add` after `terraform apply` instead (see
+# docs/GCP_DEPLOYMENT.md).
+# =============================================================================
+
+project_id = "my-gcp-project-id"
+region     = "us-central1"
+
+name_prefix = "llmgw"
+
+# Build & push this first -- see docs/GCP_DEPLOYMENT.md step 2.
+container_image = "us-central1-docker.pkg.dev/my-gcp-project-id/llm-gateway/enterprise-llm-gateway-router:latest"
+
+container_port    = 8000
+health_check_path = "/health"
+
+cpu                 = "1"
+memory              = "512Mi"
+min_instance_count  = 0
+max_instance_count  = 3
+
+# true = publicly callable without IAM auth (simplest demo path).
+# false = Cloud Run requires IAM auth; only API Gateway's managed service
+# agent is granted invoker (recommended beyond a throwaway demo).
+allow_unauthenticated = true
+
+# Memorystore sizing. STANDARD_HA requires memory_size_gb >= 5.
+redis_tier            = "BASIC"
+redis_memory_size_gb  = 1
+
+# Leave blank (recommended) and populate via:
+#   printf '%s' 'sk-...'      | gcloud secrets versions add llmgw-openai-api-key --data-file=-
+#   printf '%s' '<token>'     | gcloud secrets versions add llmgw-vertex-access-token --data-file=-
+openai_api_key      = ""
+vertex_access_token = ""
+
+vertex_project_id = ""
+vertex_location    = "us-central1"
+
+# Recommended production alternative to the static vertex_access_token
+# above -- see variables.tf for the full explanation.
+enable_vertex_workload_identity = false
+
+ollama_host = ""

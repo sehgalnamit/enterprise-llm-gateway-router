@@ -1,0 +1,54 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: gateway-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    volumes:
+      - redis-data:/data
+
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gateway-app
+    ports:
+      - "8000:8000"
+    environment:
+      GATEWAY_REDIS_URL: redis://redis:6379/0
+      # Real providers are OFF by default (self-contained demo). Set these to
+      # enable them -- the router fails over to the mock personas otherwise.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      VERTEX_PROJECT_ID: ${VERTEX_PROJECT_ID:-}
+      VERTEX_ACCESS_TOKEN: ${VERTEX_ACCESS_TOKEN:-}
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://ollama:11434}
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # Optional local Ollama service for a real (non-mock) local model backend.
+  # Commented out by default because the model image pull is heavy (multiple
+  # GB) and not required for the offline demo -- the 'local-qwen' MockProvider
+  # persona stands in for it. Uncomment to exercise a real local model:
+  #
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: gateway-ollama
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ollama-data:/root/.ollama
+
+volumes:
+  redis-data:
+  # ollama-data:
