@@ -1,0 +1,12 @@
+# Optional: the OFFICIAL TypeSafe Python SDK, as a drop-in alternative to
+# this repo's minimal httpx-based `TypeSafeJevClient` (evaluator/jev_gate.py).
+#
+# NOT required to run this repo's tests, demos, or CI -- everything works
+# fully offline via `LocalJevStandIn` by default. Install this only if you
+# want to use the official `typesafe_sdk.TypeSafeClient` pattern directly
+# (see https://docs.typesafe.ai/sdk and https://docs.typesafe.ai/sdk/python)
+# instead of / in addition to `TypeSafeJevClient`.
+#
+# Deliberately kept out of requirements.txt / requirements-dev.txt so CI
+# never depends on this package being installable/available.
+typesafe-sdk

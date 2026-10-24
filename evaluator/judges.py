@@ -112,7 +112,7 @@ class SemanticOverlapJudge(BaseJudge):
     ) -> JudgeVote:
         emb_a = self._embedder.embed(response_a.content)
         emb_b = self._embedder.embed(response_b.content)
-        score = max(0.0, cosine_similarity(emb_a, emb_b))
+        score = min(1.0, max(0.0, cosine_similarity(emb_a, emb_b)))
         passed = score >= self.min_score_to_pass
         rationale = f"hash-embedding cosine similarity = {score:.2f}"
         return JudgeVote(judge_name=self.name, score=score, passed=passed, rationale=rationale)
