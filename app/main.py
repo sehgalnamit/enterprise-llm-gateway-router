@@ -19,7 +19,7 @@ from __future__ import annotations
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from app.dependencies import get_jury, get_router
+from app.dependencies import get_cascade, get_jury, get_router
 from providers.fault_injection import FaultMode, fault_injector
 from router.gateway_router import AllProvidersUnavailableError
 from schemas.contracts import (
@@ -218,6 +218,33 @@ def evaluate(body: JuryEvalRequest) -> dict:
     result_a = router.route(req_a, use_cache=False)
     result_b = router.route(req_b, use_cache=False)
     verdict = jury.evaluate(body.message, result_a.response, result_b.response)
+    return {
+        "response_a": result_a.response.model_dump(mode="json"),
+        "response_b": result_b.response.model_dump(mode="json"),
+        "verdict": verdict.model_dump(mode="json"),
+    }
+
+
+@app.post("/v1/evaluate/fast")
+def evaluate_fast(body: JuryEvalRequest) -> dict:
+    """Confidence-gated cascade (TypeSafe Jev fast path + jury fallback):
+    the production-monitoring-style equivalent of `/v1/evaluate`. Jev
+    answers three fast typed questions (schema conformance, no hallucinated
+    fields, semantic equivalence) offline via `LocalJevStandIn` by default,
+    or the real hosted model if `TYPESAFE_API_KEY` is set. Only when
+    confidence is ambiguous does this escalate to the slower jury -- see
+    `evaluator/jev_gate.py` and the README's Evaluator section."""
+    router = get_router()
+    cascade = get_cascade()
+    req_a = ChatRequest(
+        messages=[ChatMessage(role=MessageRole.user, content=body.message)], model=body.model_a
+    )
+    req_b = ChatRequest(
+        messages=[ChatMessage(role=MessageRole.user, content=body.message)], model=body.model_b
+    )
+    result_a = router.route(req_a, use_cache=False)
+    result_b = router.route(req_b, use_cache=False)
+    verdict = cascade.evaluate(body.message, result_a.response, result_b.response)
     return {
         "response_a": result_a.response.model_dump(mode="json"),
         "response_b": result_b.response.model_dump(mode="json"),

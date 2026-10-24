@@ -136,3 +136,38 @@ def test_evaluate_endpoint_returns_jury_verdict(client):
     body = resp.json()
     assert "verdict" in body
     assert 0.0 <= body["verdict"]["aggregate_score"] <= 1.0
+
+
+def test_evaluate_fast_endpoint_returns_cascade_verdict(client):
+    """Confidence-gated cascade: cross-provider request should escalate to
+    the jury fallback (different mock personas -> ambiguous Jev confidence),
+    while a provider compared against itself should resolve via Jev alone."""
+    resp = client.post(
+        "/v1/evaluate/fast",
+        json={
+            "message": "What is the capital of France?",
+            "model_a": "mock-claude",
+            "model_b": "mock-gpt",
+        },
+    )
+    assert resp.status_code == 200
+    verdict = resp.json()["verdict"]
+    assert verdict["confidence_band"] in {"high", "medium", "low"}
+    assert isinstance(verdict["routed_to_jury"], bool)
+    if verdict["routed_to_jury"]:
+        assert verdict["jury_verdict"] is not None
+    else:
+        assert verdict["jury_verdict"] is None
+
+    self_resp = client.post(
+        "/v1/evaluate/fast",
+        json={
+            "message": "What is the capital of France?",
+            "model_a": "mock-claude",
+            "model_b": "mock-claude",
+        },
+    )
+    self_verdict = self_resp.json()["verdict"]
+    assert self_verdict["confidence_band"] == "high"
+    assert self_verdict["routed_to_jury"] is False
+

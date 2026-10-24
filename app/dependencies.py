@@ -1,17 +1,25 @@
 """Process-wide singletons: Redis client (with automatic fakeredis fallback
 for local/offline demo use), the semantic cache, the provider registry, and
 the gateway router. FastAPI endpoints depend on `get_router()` /
-`get_jury()`.
+`get_jury()` / `get_cascade()`.
 """
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from typing import Any
 
 from app.config import Settings, get_settings
 from cache.embedder import HashEmbedder
 from cache.semantic_cache import SemanticCache
+from evaluator.jev_gate import (
+    PRODUCTION_MONITORING_THRESHOLDS,
+    ConfidenceGatedCascade,
+    JevClient,
+    LocalJevStandIn,
+    TypeSafeJevClient,
+)
 from evaluator.jury import Jury
 from providers import build_default_providers
 from router.circuit_breaker import CircuitBreakerConfig
@@ -34,6 +42,16 @@ def _build_redis_client(settings: Settings) -> Any:
         # or CI). Transparently fall back to an in-memory fake with the same
         # client API so the semantic cache still works end-to-end.
         return fakeredis.FakeRedis(decode_responses=True)
+
+
+def _build_jev_client() -> JevClient:
+    # Mirrors the pattern used by this repo's real provider adapters: if
+    # TYPESAFE_API_KEY is set, use the real hosted Jev model; otherwise fall
+    # back to the deterministic, offline-safe LocalJevStandIn. Switching to
+    # the real model in production is just setting an env var.
+    if os.environ.get("TYPESAFE_API_KEY"):
+        return TypeSafeJevClient()
+    return LocalJevStandIn()
 
 
 @lru_cache(maxsize=1)
@@ -67,8 +85,22 @@ def get_jury() -> Jury:
     return Jury(score_threshold=settings.jury_score_threshold)
 
 
+@lru_cache(maxsize=1)
+def get_cascade() -> ConfidenceGatedCascade:
+    """Confidence-gated cascade for the fast, production-monitoring style
+    path: TypeSafe Jev (real if TYPESAFE_API_KEY is set, else the offline
+    LocalJevStandIn) answers typed questions first; only confidence-ambiguous
+    cases fall back to the slower jury."""
+    return ConfidenceGatedCascade(
+        jev_client=_build_jev_client(),
+        jury=get_jury(),
+        thresholds=PRODUCTION_MONITORING_THRESHOLDS,
+    )
+
+
 def reset_singletons() -> None:
     """Test helper: clears cached singletons between test modules."""
     get_router.cache_clear()
     get_jury.cache_clear()
+    get_cascade.cache_clear()
     get_settings_cached.cache_clear()
